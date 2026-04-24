@@ -393,6 +393,10 @@ class _HomeworkDetailScreenState extends State<HomeworkDetailScreen> {
                 width: double.infinity,
                 child: ElevatedButton(
                   onPressed: () {
+                    final activeStudId =
+                        apiService.currentStudentId ??
+                        apiService.currentUserId ??
+                        widget.studId;
                     Navigator.push(
                       context,
                       MaterialPageRoute(
@@ -400,7 +404,7 @@ class _HomeworkDetailScreenState extends State<HomeworkDetailScreen> {
                           hwAssignId: widget.hwAssignId,
                           hwContentId: hw['hw_content_id'] ?? 0,
                           hwType: widget.hwType,
-                          studId: widget.studId,
+                          studId: activeStudId,
                           batch: widget.batch,
                           weekId: widget.weekId,
                           dueDate: widget.dueDate,

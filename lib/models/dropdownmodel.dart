@@ -6,6 +6,7 @@ class MenuItem {
   final String mainMenuTitle;
   final String statusBar;
   final int menuOrder;
+  final String routePath;
 
   MenuItem({
     required this.subMenuId,
@@ -13,15 +14,42 @@ class MenuItem {
     required this.mainMenuTitle,
     required this.statusBar,
     required this.menuOrder,
+    this.routePath = '',
   });
 
   factory MenuItem.fromJson(Map<String, dynamic> json) {
+    String readString(List<String> keys) {
+      for (final key in keys) {
+        final value = json[key];
+        if (value != null && value.toString().trim().isNotEmpty) {
+          return value.toString().trim();
+        }
+      }
+      return '';
+    }
+
     return MenuItem(
       subMenuId: json['sub_menu_id'] ?? 0,
       mainMenuId: json['main_menu_id'] ?? 0,
       mainMenuTitle: json['main_menu_title'] ?? 'N/A',
       statusBar: json['status_bar'] ?? 'N/A',
       menuOrder: json['menu_order'] ?? 0,
+      routePath: readString([
+        'route',
+        'route_path',
+        'router_link',
+        'routerLink',
+        'page_route',
+        'pageRoute',
+        'navigation_url',
+        'navigate_url',
+        'menu_url',
+        'menu_link',
+        'url',
+        'path',
+        'screen_name',
+        'screen_route',
+      ]),
     );
   }
 }

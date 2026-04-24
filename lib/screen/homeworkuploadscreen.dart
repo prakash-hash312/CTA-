@@ -43,6 +43,15 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
   late TabController _tabController;
   int _currentTab = 0;
   bool _isTurningIn = false;
+  bool _isTurnedIn = false;
+  int? _activeStudId;
+
+  String get _turnedInPrefsKey =>
+      'turned_in_${widget.studId}_${widget.hwAssignId}_${widget.weekId}';
+
+  // 🔑 FIX: Track whether student ID resolution failed so we can show a
+  // meaningful error message instead of silently showing an empty screen.
+  bool _studIdResolutionFailed = false;
 
   List<File> _uploadedFiles = [];
   List<Map<String, dynamic>> _serverFiles = [];
@@ -72,6 +81,13 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
   bool _isPlaying = false;
   bool _isMuted = false;
   double _volume = 1.0;
+
+  Future<void> _loadTurnedInFlag() async {
+    final prefs = await SharedPreferences.getInstance();
+    final turnedIn = prefs.getBool(_turnedInPrefsKey) ?? false;
+    if (!mounted) return;
+    setState(() => _isTurnedIn = turnedIn);
+  }
 
   String? _tempRecordedPath;
   String? _recordedPath;
@@ -133,12 +149,20 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
               child: SizedBox(
                 height: 46,
                 child: OutlinedButton(
-                  onPressed: _isTurningIn ? null : () => _submitHomework(isDraft: true),
+                  onPressed: (_isTurningIn || _isTurnedIn)
+                      ? null
+                      : () => _submitHomework(isDraft: true),
                   style: OutlinedButton.styleFrom(
-                    shape: const StadiumBorder(), // pill shape
-                    side: BorderSide(color: Colors.blue.shade800, width: 1.6),
-                    foregroundColor: Colors.blue.shade800,
+                    shape: const StadiumBorder(),
+                    side: BorderSide(
+                      color: _isTurnedIn ? Colors.grey.shade400 : Colors.blue.shade800,
+                      width: 1.6,
+                    ),
+                    foregroundColor:
+                        _isTurnedIn ? Colors.grey.shade600 : Colors.blue.shade800,
                     backgroundColor: Colors.transparent,
+                    disabledForegroundColor: Colors.grey.shade600,
+                    disabledBackgroundColor: Colors.grey.shade200,
                   ),
                   child: const Text(
                     'Save Draft',
@@ -149,25 +173,32 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
             ),
             const SizedBox(width: 14),
             Expanded(
-              child: SizedBox(
-                height: 46,
-                child: ElevatedButton(
-                  onPressed: _isTurningIn ? null : _showTurnInConfirmationDialog,
-                  style: ElevatedButton.styleFrom(
-                    shape: const StadiumBorder(), // pill shape
-                    elevation: 0,
-                    backgroundColor: Colors.blue.shade900,
-                    foregroundColor: Colors.white,
-                  ),
-                  child: _isTurningIn
-                      ? const SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white),
-                  )
-                      : const Text(
-                    'Turn In',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                child: SizedBox(
+                  height: 46,
+                  child: ElevatedButton(
+                    onPressed: (_isTurningIn || _isTurnedIn)
+                        ? null
+                        : _showTurnInConfirmationDialog,
+                    style: ElevatedButton.styleFrom(
+                      shape: const StadiumBorder(),
+                      elevation: 0,
+                      backgroundColor: Colors.blue.shade900,
+                      foregroundColor: Colors.white,
+                    ),
+                    child: _isTurningIn
+                        ? const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2.5, color: Colors.white),
+                          )
+                        : const Text(
+                            'Turn In',
+                            style: TextStyle(
+                                fontSize: 16, fontWeight: FontWeight.w900),
+                          ),
                   ),
                 ),
               ),
@@ -177,7 +208,6 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
       ),
     );
   }
-
 
   // ------------------- LOGIC (UNCHANGED) -------------------
   bool _isAudioFile(File f) {
@@ -194,19 +224,21 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
 
   bool _isServerAudioFile(String fileName) {
     final ext =
-    fileName.contains('.') ? fileName.split('.').last.toLowerCase() : '';
+        fileName.contains('.') ? fileName.split('.').last.toLowerCase() : '';
     return _audioExtensions.contains(ext);
   }
 
   int get _currentDocCount =>
       _uploadedFiles.where((f) => _isDocumentFile(f)).length +
-          _serverFiles
-              .where((f) => !_isServerAudioFile(f['file_name'] ?? ''))
-              .length;
+      _serverFiles
+          .where((f) => !_isServerAudioFile(f['file_name'] ?? ''))
+          .length;
 
   int get _currentAudioCount =>
       _uploadedFiles.where((f) => _isAudioFile(f)).length +
-          _serverFiles.where((f) => _isServerAudioFile(f['file_name'] ?? '')).length;
+      _serverFiles
+          .where((f) => _isServerAudioFile(f['file_name'] ?? ''))
+          .length;
 
   int get _totalFileCount => _uploadedFiles.length + _serverFiles.length;
 
@@ -216,11 +248,25 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
     return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
   }
 
-  int _resolveSubmissionUserId() {
-    final userId = apiService.currentUserId;
-    if (userId != null && userId > 0) return userId;
-    return widget.studId;
+  int _resolveSubmissionUserId() =>
+      apiService.currentUserId ?? _activeStudId ?? widget.studId;
+
+  // 🔑 FIX: _resolveActiveStudId now prefers the successfully resolved
+  // _activeStudId over falling back directly to widget.studId (which is
+  // the stud_id passed by the parent screen and could be 0 for some users).
+  int _resolveActiveStudId() {
+    final resolved = _activeStudId ??
+        apiService.currentStudentId ??
+        apiService.currentUserId;
+    if (resolved != null && resolved > 0) return resolved;
+    // Last resort: use widget.studId only if it's positive
+    if (widget.studId > 0) return widget.studId;
+    debugPrint('⚠️ [HomeworkUpload] _resolveActiveStudId returned 0!');
+    return 0;
   }
+
+  String get _uploadCacheKey =>
+      'uploaded_files_${_resolveActiveStudId()}_${widget.hwAssignId}';
 
   String? _resolveServerFileUrl(Map<String, dynamic> file) {
     final raw = (file['file_url'] ??
@@ -262,14 +308,24 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
   }
 
   Future<void> _fetchServerFiles() async {
+    // 🔑 FIX: Don't attempt to fetch server files if we don't have a valid
+    // student ID — it would silently return empty or hit a wrong endpoint.
+    final activeId = _resolveActiveStudId();
+    if (activeId <= 0) {
+      debugPrint('⚠️ [fetchServerFiles] Skipped — no valid stud_id');
+      return;
+    }
+
     setState(() => _isLoadingServerFiles = true);
     try {
-      debugPrint('📥 Fetching server files for hwAssignId=${widget.hwAssignId}');
+      debugPrint(
+          '📥 Fetching server files for hwAssignId=${widget.hwAssignId}, studId=$activeId');
       final safeHwType =
-      widget.hwType.trim().isEmpty ? 'Regular Homework' : widget.hwType.trim();
+          widget.hwType.trim().isEmpty ? 'Regular Homework' : widget.hwType.trim();
       final files = await apiService.fetchUploadedHomeworkFiles(
         hwAssignId: widget.hwAssignId,
         hwType: safeHwType,
+        studId: activeId,
       );
       setState(() {
         _serverFiles = files;
@@ -290,17 +346,18 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
   }
 
   Future<void> _deleteServerFile(Map<String, dynamic> file) async {
+    if (_isTurnedIn) return;
     final fileName = file['file_name'] ?? '';
     if (fileName.isEmpty) return;
     try {
       debugPrint('🗑️ Deleting server file: $fileName');
       final safeHwType =
-      widget.hwType.trim().isEmpty ? 'Regular Homework' : widget.hwType.trim();
+          widget.hwType.trim().isEmpty ? 'Regular Homework' : widget.hwType.trim();
       final result = await apiService.deleteHomeworkFile(
         homeworkType: safeHwType,
         batch: widget.batch,
         weekId: widget.weekId,
-        studId: widget.studId,
+        studId: _resolveActiveStudId(),
         fileName: fileName,
       );
       if (result['success'] == true) {
@@ -309,7 +366,8 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
         });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('✅ ${result['message'] ?? 'File deleted successfully'}'),
+            content: Text(
+                '✅ ${result['message'] ?? 'File deleted successfully'}'),
             backgroundColor: Colors.green,
           ),
         );
@@ -319,7 +377,8 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
         });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('⚠️ File removed from list (stored in legacy location)'),
+            content: Text(
+                '⚠️ File removed from list (stored in legacy location)'),
             backgroundColor: Colors.orange,
           ),
         );
@@ -329,7 +388,9 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
     } catch (e) {
       debugPrint('❌ Delete failed: $e');
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('❌ Failed to delete: $e'), backgroundColor: Colors.red),
+        SnackBar(
+            content: Text('❌ Failed to delete: $e'),
+            backgroundColor: Colors.red),
       );
     }
   }
@@ -338,11 +399,11 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
     if (names.isEmpty) return;
     try {
       final prefs = await SharedPreferences.getInstance();
-      final key = 'uploaded_files_${widget.hwAssignId}';
-      final existing = prefs.getStringList(key) ?? [];
+      final existing = prefs.getStringList(_uploadCacheKey) ?? [];
       final merged = <String>{...existing, ...names}.toList();
-      await prefs.setStringList(key, merged);
-      debugPrint('💾 Cached ${merged.length} files for hwAssignId=${widget.hwAssignId}');
+      await prefs.setStringList(_uploadCacheKey, merged);
+      debugPrint(
+          '💾 Cached ${merged.length} files for hwAssignId=${widget.hwAssignId}');
     } catch (e) {
       debugPrint('❌ Cache error: $e');
     }
@@ -355,13 +416,51 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
     _tabController.addListener(() {
       setState(() => _currentTab = _tabController.index);
     });
-    _fetchServerFiles();
+    _loadTurnedInFlag();
+    _initializeScreen();
+  }
+
+  Future<void> _initializeScreen() async {
+    // 🔑 FIX: Resolve the active student ID. If resolution returns null
+    // (meaning none of the fallback strategies worked for this account),
+    // we mark the screen as failed and show an error — instead of
+    // silently using the wrong ID (user_id) and fetching empty data.
+    final resolvedStudId = await apiService.resolveActiveStudentId();
+
+    if (!mounted) return;
+
+    debugPrint(
+        '🔍 [HomeworkUpload] resolvedStudId=$resolvedStudId, widget.studId=${widget.studId}');
+
+    // Use resolved ID if valid; otherwise fall back to widget.studId
+    final effectiveStudId = (resolvedStudId != null && resolvedStudId > 0)
+        ? resolvedStudId
+        : (widget.studId > 0 ? widget.studId : null);
+
+    if (effectiveStudId == null || effectiveStudId <= 0) {
+      debugPrint(
+          '❌ [HomeworkUpload] Could not resolve a valid student ID for this account.');
+      setState(() {
+        _studIdResolutionFailed = true;
+      });
+      return;
+    }
+
+    setState(() {
+      _activeStudId = effectiveStudId;
+      _studIdResolutionFailed = false;
+    });
+
+    debugPrint('✅ [HomeworkUpload] Using stud_id=$_activeStudId');
+    await _fetchServerFiles();
   }
 
   Future<void> _pickFiles() async {
+    if (_isTurnedIn) return;
     if (_totalFileCount >= _maxFiles) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('You already have 10 files. Cannot add more!')),
+        const SnackBar(
+            content: Text('You already have 10 files. Cannot add more!')),
       );
       return;
     }
@@ -385,7 +484,9 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
 
       if (!_allowedExtensions.contains(ext)) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('❌ $name: invalid file type ($ext not allowed)')),
+          SnackBar(
+              content: Text(
+                  '❌ $name: invalid file type ($ext not allowed)')),
         );
         return;
       }
@@ -444,10 +545,12 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
   }
 
   Future<void> _startRecording() async {
+    if (_isTurnedIn) return;
     try {
       if (await _recorder.hasPermission()) {
         final tmp = Directory.systemTemp.path;
-        final path = '$tmp/rec_${DateTime.now().millisecondsSinceEpoch}.m4a';
+        final path =
+            '$tmp/rec_${DateTime.now().millisecondsSinceEpoch}.m4a';
 
         await _recorder.start(
           const RecordConfig(encoder: AudioEncoder.aacLc),
@@ -467,7 +570,8 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
         });
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Microphone permission denied.')),
+          const SnackBar(
+              content: Text('Microphone permission denied.')),
         );
       }
     } catch (e) {
@@ -507,7 +611,8 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
           });
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Recording exceeds 1 MB — please shorten and re-record.'),
+              content: Text(
+                  'Recording exceeds 1 MB — please shorten and re-record.'),
             ),
           );
           return;
@@ -525,7 +630,8 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
           });
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Cannot record — audio limit of $_maxAudioFiles recordings reached.'),
+              content: Text(
+                  'Cannot record — audio limit of $_maxAudioFiles recordings reached.'),
             ),
           );
           return;
@@ -541,7 +647,8 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
 
   void _showSnackBar(String message) {
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(message)));
     }
   }
 
@@ -574,14 +681,17 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
 
     if (_currentAudioCount >= _maxAudioFiles) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Cannot save — audio limit ($_maxAudioFiles) reached.')),
+        SnackBar(
+            content: Text(
+                'Cannot save — audio limit ($_maxAudioFiles) reached.')),
       );
       return;
     }
 
     if (_totalFileCount >= _maxFiles) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Cannot save — already have 10 files.')),
+        const SnackBar(
+            content: Text('Cannot save — already have 10 files.')),
       );
       return;
     }
@@ -613,30 +723,25 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
     super.dispose();
   }
 
-  // ------------------- UI WIDGETS (SAME LOGIC, BETTER LOOK) -------------------
+  // ------------------- UI WIDGETS -------------------
   Widget _buildUploadTab() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(18),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Upload Card
-          GestureDetector(
-            onTap: _pickFiles,
-            child: Container(
+          AbsorbPointer(
+            absorbing: _isTurnedIn,
+            child: Opacity(
+              opacity: _isTurnedIn ? 0.45 : 1,
+              child: GestureDetector(
+                onTap: _isTurnedIn ? null : _pickFiles,
+                child: Container(
               width: double.infinity,
               height: 200,
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(22),
-                color: Colors.white,
-                // gradient: const LinearGradient(
-                //   begin: Alignment.topLeft,
-                //   end: Alignment.bottomRight,
-                //   colors: [
-                //     Color(0xFFF7FBFF),
-                //     Color(0xFFEAF3FF),
-                //   ],
-                // ),
+                color: _isTurnedIn ? Colors.grey.shade200 : Colors.white,
                 border: Border.all(color: const Color(0xFFD6E6FF)),
                 boxShadow: [
                   BoxShadow(
@@ -692,6 +797,8 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
                   ),
                 ],
               ),
+                ),
+              ),
             ),
           ),
 
@@ -703,37 +810,32 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
   }
 
   Widget _buildRecordAudioCard() {
-    return Container(
-      width: double.infinity,
-      constraints: const BoxConstraints(
-        minHeight: 190, // 👈 keeps visual consistency
-      ),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(22),
-        color: Colors.white,
-        // gradient: const LinearGradient(
-        //   begin: Alignment.topLeft,
-        //   end: Alignment.bottomRight,
-        //   colors: [
-        //     Color(0xFFF7FBFF),
-        //     Color(0xFFEAF3FF),
-        //   ],
-        // ),
-        border: Border.all(color: Color(0xFFD6E6FF)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 14,
-            offset: const Offset(0, 6),
+    return AbsorbPointer(
+      absorbing: _isTurnedIn,
+      child: Opacity(
+        opacity: _isTurnedIn ? 0.45 : 1,
+        child: Container(
+          width: double.infinity,
+          constraints: const BoxConstraints(
+            minHeight: 190,
           ),
-        ],
-      ),
-      padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
-      child: Column(
-        mainAxisSize: MainAxisSize.min, // ✅ VERY IMPORTANT
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          // 🎤 MIC BADGE
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(22),
+            color: _isTurnedIn ? Colors.grey.shade200 : Colors.white,
+            border: Border.all(color: const Color(0xFFD6E6FF)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.05),
+                blurRadius: 14,
+                offset: const Offset(0, 6),
+              ),
+            ],
+          ),
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
           Container(
             width: 72,
             height: 72,
@@ -741,11 +843,11 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
               shape: BoxShape.circle,
               gradient: _isRecording
                   ? const LinearGradient(
-                colors: [Colors.redAccent, Colors.red],
-              )
+                      colors: [Colors.redAccent, Colors.red],
+                    )
                   : const LinearGradient(
-                colors: [Color(0xFF0A3D91), Color(0xFF1565C0)],
-              ),
+                      colors: [Color(0xFF0A3D91), Color(0xFF1565C0)],
+                    ),
               boxShadow: [
                 BoxShadow(
                   color: (_isRecording ? Colors.red : Colors.blue)
@@ -764,7 +866,6 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
 
           const SizedBox(height: 14),
 
-          // 📝 TITLE
           Text(
             _isRecording
                 ? 'Recording...'
@@ -790,7 +891,6 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
 
           const SizedBox(height: 16),
 
-          // 🎯 ACTION BUTTONS
           if (!_recordingComplete)
             SizedBox(
               width: double.infinity,
@@ -799,7 +899,7 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
                 onPressed: _isRecording ? _stopRecording : _startRecording,
                 style: ElevatedButton.styleFrom(
                   backgroundColor:
-                  _isRecording ? Colors.red : Colors.blue.shade900,
+                      _isRecording ? Colors.red : Colors.blue.shade900,
                   foregroundColor: Colors.white,
                   shape: const StadiumBorder(),
                   elevation: 0,
@@ -849,12 +949,12 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
                 ),
               ],
             ),
-        ],
+            ],
+          ),
+        ),
       ),
     );
   }
-
-
 
   Widget _buildRecordTab() {
     return SingleChildScrollView(
@@ -878,11 +978,12 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
       children: [
         Row(
           children: [
-            // const Icon(Icons.folder, color: Color(0xFFFFC107), size: 26),
-            // const SizedBox(width: 8),
             Text(
               'Uploaded Files',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: Colors.blue.shade800),
+              style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.blue.shade800),
             ),
             const Spacer(),
             if (_isLoadingServerFiles)
@@ -902,12 +1003,15 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
             child: Center(
               child: Text(
                 'No files uploaded yet',
-                style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
+                style:
+                    TextStyle(fontSize: 14, color: Colors.grey.shade600),
               ),
             ),
           )
         else ...[
-          ..._serverFiles.map((file) => _buildServerFileItem(file)).toList(),
+          ..._serverFiles
+              .map((file) => _buildServerFileItem(file))
+              .toList(),
           ..._uploadedFiles.map((file) => _buildFileItem(file)).toList(),
         ],
       ],
@@ -927,12 +1031,16 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: isAudio ? const Color(0xFFE3F2FD) : const Color(0xFFE8F5E9),
+              color: isAudio
+                  ? const Color(0xFFE3F2FD)
+                  : const Color(0xFFE8F5E9),
               borderRadius: BorderRadius.circular(12),
             ),
             child: Icon(
               isAudio ? Icons.audiotrack : Icons.insert_drive_file,
-              color: isAudio ? const Color(0xFF1976D2) : const Color(0xFF388E3C),
+              color: isAudio
+                  ? const Color(0xFF1976D2)
+                  : const Color(0xFF388E3C),
               size: 22,
             ),
           ),
@@ -940,20 +1048,25 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
           Expanded(
             child: Text(
               fileName,
-              style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w700),
+              style: const TextStyle(
+                  fontSize: 14.5, fontWeight: FontWeight.w700),
               overflow: TextOverflow.ellipsis,
               maxLines: 1,
             ),
           ),
           TextButton(
             onPressed: () => _openServerFile(file),
-            child: const Text('View', style: TextStyle(fontWeight: FontWeight.w800)),
+            child: const Text('View',
+                style: TextStyle(fontWeight: FontWeight.w800)),
           ),
-          TextButton(
-            onPressed: () => _deleteServerFile(file),
-            child: const Text('Delete',
-                style: TextStyle(fontWeight: FontWeight.w800, color: Color(0xFFD32F2F))),
-          ),
+          if (!_isTurnedIn)
+            TextButton(
+              onPressed: () => _deleteServerFile(file),
+              child: const Text('Delete',
+                  style: TextStyle(
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFFD32F2F))),
+            ),
         ],
       ),
     );
@@ -994,27 +1107,33 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
                   children: [
                     Text(
                       name,
-                      style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w700),
+                      style: const TextStyle(
+                          fontSize: 14.5, fontWeight: FontWeight.w700),
                       overflow: TextOverflow.ellipsis,
                       maxLines: 1,
                     ),
                     const SizedBox(height: 2),
                     Text(
                       sizeStr,
-                      style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                      style: TextStyle(
+                          fontSize: 12, color: Colors.grey.shade600),
                     ),
                   ],
                 ),
               ),
               TextButton(
                 onPressed: () async => OpenFilex.open(file.path),
-                child: const Text('View', style: TextStyle(fontWeight: FontWeight.w800)),
+                child: const Text('View',
+                    style: TextStyle(fontWeight: FontWeight.w800)),
               ),
-              TextButton(
-                onPressed: () => setState(() => _uploadedFiles.remove(file)),
-                child: const Text('Delete',
-                    style: TextStyle(fontWeight: FontWeight.w800, color: Color(0xFFD32F2F))),
-              ),
+              if (!_isTurnedIn)
+                TextButton(
+                  onPressed: () => setState(() => _uploadedFiles.remove(file)),
+                  child: const Text('Delete',
+                      style: TextStyle(
+                          fontWeight: FontWeight.w800,
+                          color: Color(0xFFD32F2F))),
+                ),
             ],
           ),
         );
@@ -1022,24 +1141,26 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
     );
   }
 
-  // ------------------- YOUR EXISTING SUBMIT + TURNIN FLOW (UNCHANGED) -------------------
+  // ------------------- SUBMIT + TURNIN FLOW -------------------
   Future<void> _submitHomework({required bool isDraft}) async {
     if (_uploadedFiles.isEmpty && _serverFiles.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please upload at least one file!')),
+        const SnackBar(
+            content: Text('Please upload at least one file!')),
       );
       return;
     }
 
     try {
-      final safeHwType =
-      widget.hwType.trim().isEmpty ? 'Regular Homework' : widget.hwType.trim();
+      final safeHwType = widget.hwType.trim().isEmpty
+          ? 'Regular Homework'
+          : widget.hwType.trim();
 
       List<String> allUploadedNames = [];
 
       if (_uploadedFiles.isNotEmpty) {
         final uploadResponse = await apiService.uploadHomeworkFiles(
-          studentId: widget.studId,
+          studentId: _resolveActiveStudId(),
           batch: widget.batch,
           weekId: widget.weekId,
           homeworkType: safeHwType,
@@ -1059,7 +1180,8 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
             return e.toString();
           }));
         } else {
-          allUploadedNames.addAll(_uploadedFiles.map((f) => f.path.split('/').last));
+          allUploadedNames.addAll(
+              _uploadedFiles.map((f) => f.path.split('/').last));
         }
       }
 
@@ -1080,33 +1202,40 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
         hwType: safeHwType,
         batch: widget.batch,
         weekId: widget.weekId,
-        studId: widget.studId,
+        studId: _resolveActiveStudId(),
         hwAssignId: widget.hwAssignId,
         userId: submissionUserId,
         uploadedFiles: allUploadedNames,
       );
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('✅ $draftResponse'), backgroundColor: Colors.green),
+        SnackBar(
+            content: Text('✅ $draftResponse'),
+            backgroundColor: Colors.green),
       );
 
       setState(() => _uploadedFiles.clear());
       await _fetchServerFiles();
 
       if (!isDraft) {
-        Navigator.pushReplacement(
+        final turnedIn = await Navigator.push(
           context,
           MaterialPageRoute(
             builder: (context) => UploadedFilesScreen(
               hwAssignId: widget.hwAssignId,
               hwType: safeHwType,
-              studId: widget.studId,
+              studId: _resolveActiveStudId(),
               batch: widget.batch,
               weekId: widget.weekId,
               dueDate: widget.dueDate,
             ),
           ),
         );
+        if (!mounted) return;
+        if (turnedIn == true) {
+          setState(() => _isTurnedIn = true);
+          _tabController.animateTo(0);
+        }
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1119,9 +1248,13 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
     showDialog(
       context: context,
       barrierDismissible: false,
+      barrierColor: Colors.black.withOpacity(0.55),
       builder: (BuildContext dialogContext) {
         return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          insetPadding:
+              const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: const Text(
             'Turn In Homework?',
             style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
@@ -1131,20 +1264,39 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
             style: TextStyle(fontSize: 14, height: 1.5),
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Cancel', style: TextStyle(fontWeight: FontWeight.w700)),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.of(dialogContext).pop();
-                _performTurnIn();
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.purple,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+              child: Row(
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.of(dialogContext).pop(),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 18, vertical: 12),
+                    ),
+                    child: const Text('Cancel',
+                        style: TextStyle(fontWeight: FontWeight.w700)),
+                  ),
+                  const Spacer(),
+                  ElevatedButton(
+                    onPressed: () {
+                      Navigator.of(dialogContext).pop();
+                      _performTurnIn();
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue.shade900,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: const StadiumBorder(),
+                      minimumSize: const Size(140, 44),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 26, vertical: 12),
+                    ),
+                    child: const Text('Turn In',
+                        style: TextStyle(fontWeight: FontWeight.w800)),
+                  ),
+                ],
               ),
-              child: const Text('Turn In', style: TextStyle(fontWeight: FontWeight.w800)),
             ),
           ],
         );
@@ -1155,12 +1307,14 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
   Future<void> _performTurnIn() async {
     setState(() => _isTurningIn = true);
     try {
-      final safeHwType =
-      widget.hwType.trim().isEmpty ? 'Regular Homework' : widget.hwType.trim();
+      final safeHwType = widget.hwType.trim().isEmpty
+          ? 'Regular Homework'
+          : widget.hwType.trim();
 
       final uploadedFiles = await apiService.fetchUploadedHomeworkFiles(
         hwAssignId: widget.hwAssignId,
         hwType: safeHwType,
+        studId: _resolveActiveStudId(),
       );
 
       if (uploadedFiles.isEmpty) {
@@ -1169,7 +1323,7 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
       }
 
       final uploadedFileNames =
-      uploadedFiles.map((f) => f['file_name'].toString()).toList();
+          uploadedFiles.map((f) => f['file_name'].toString()).toList();
 
       final submissionUserId = _resolveSubmissionUserId();
       if (submissionUserId <= 0) {
@@ -1180,7 +1334,7 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
         hwType: safeHwType,
         batch: widget.batch,
         weekId: widget.weekId,
-        studId: widget.studId,
+        studId: _resolveActiveStudId(),
         hwAssignId: widget.hwAssignId,
         userId: submissionUserId,
         uploadedFiles: uploadedFileNames,
@@ -1188,14 +1342,15 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
 
       if (response['success'] == true) {
         _showSnackBar('✅ ${response['message']}');
-        await Future.delayed(const Duration(seconds: 3));
-        await apiService.fetchStudentHomeWork();
-
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool(_turnedInPrefsKey, true);
+        if (mounted) setState(() => _isTurnedIn = true);
+        await Future.delayed(const Duration(milliseconds: 300));
         if (!mounted) return;
         Navigator.pushAndRemoveUntil(
           context,
           MaterialPageRoute(builder: (context) => const HomeWorkScreen()),
-              (route) => false,
+          (route) => false,
         );
       } else {
         throw Exception(response['message'] ?? 'Turn In failed.');
@@ -1207,12 +1362,75 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
     }
   }
 
-  // ------------------- MAIN BUILD (UI IMPROVED, LOGIC SAME) -------------------
+  // ------------------- MAIN BUILD -------------------
   @override
   Widget build(BuildContext context) {
+    // 🔑 FIX: If student ID resolution failed, show a clear error screen
+    // instead of an empty upload screen with no explanation. Previously
+    // the screen would appear but all API calls would silently fail.
+    if (_studIdResolutionFailed) {
+      return SafeArea(
+        child: Scaffold(
+          backgroundColor: const Color(0xFFE9F0FF),
+          appBar: AppBar(
+            elevation: 0,
+            title: const Text('Homework Upload',
+                style: TextStyle(fontWeight: FontWeight.w600)),
+            backgroundColor: AppColors.appbarblue,
+            centerTitle: true,
+            foregroundColor: Colors.white,
+          ),
+          body: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(32.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.error_outline,
+                      size: 64, color: Colors.red),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Unable to load homework',
+                    style: TextStyle(
+                        fontSize: 18, fontWeight: FontWeight.w800),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Your student account could not be identified. '
+                    'Please log out and log in again. '
+                    'If the issue persists, contact your administrator.',
+                    style: TextStyle(
+                        fontSize: 14, color: Colors.grey.shade600),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 24),
+                  ElevatedButton(
+                    onPressed: () {
+                      setState(() => _studIdResolutionFailed = false);
+                      _initializeScreen();
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue.shade900,
+                      shape: const StadiumBorder(),
+                    ),
+                    child: const Text('Retry',
+                        style: TextStyle(
+                            fontWeight: FontWeight.w800,
+                            color: Colors.white)),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
     return SafeArea(
       child: Scaffold(
-        backgroundColor: const Color(0xFFE9F0FF),
+        backgroundColor:
+            _isTurnedIn ? Colors.grey.shade200 : const Color(0xFFE9F0FF),
         appBar: AppBar(
           elevation: 0,
           title: const Text('Homework Upload',
@@ -1222,12 +1440,12 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
           foregroundColor: Colors.white,
           bottom: const PreferredSize(
             preferredSize: Size.fromHeight(1.0),
-            child: Divider(height: 1, thickness: 1, color: Color(0xFFCAC5C5)),
+            child: Divider(
+                height: 1, thickness: 1, color: Color(0xFFCAC5C5)),
           ),
         ),
         body: Column(
           children: [
-            // ✅ Rounded Segmented Tabs (no functionality change)
             Padding(
               padding: const EdgeInsets.all(16),
               child: Container(
@@ -1265,7 +1483,7 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
                 ),
               ),
             ),
-      
+
             Expanded(
               child: TabBarView(
                 controller: _tabController,
@@ -1297,8 +1515,8 @@ class _HomeworkUploadScreenState extends State<HomeworkUploadScreen>
         decoration: BoxDecoration(
           gradient: active
               ? const LinearGradient(
-            colors: [Color(0xFF0A3D91), Color(0xFF1565C0)],
-          )
+                  colors: [Color(0xFF0A3D91), Color(0xFF1565C0)],
+                )
               : null,
           color: active ? null : Colors.white,
           borderRadius: BorderRadius.circular(14),

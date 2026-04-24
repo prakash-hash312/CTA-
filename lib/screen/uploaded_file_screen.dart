@@ -37,6 +37,28 @@ class UploadedFilesScreen extends StatefulWidget {
 class _UploadedFilesScreenState extends State<UploadedFilesScreen> {
   late Future<List<Map<String, dynamic>>> _filesFuture;
   final Map<int, bool> _downloadingFiles = {};
+  int? _activeStudId;
+  bool _isTurningIn = false;
+  bool _isTurnedIn = false;
+
+  String get _turnedInPrefsKey =>
+      'turned_in_${widget.studId}_${widget.hwAssignId}_${widget.weekId}';
+
+  int _resolveActiveStudId() =>
+      _activeStudId ??
+      apiService.currentStudentId ??
+      apiService.currentUserId ??
+      widget.studId;
+
+  String get _uploadCacheKey =>
+      'uploaded_files_${_resolveActiveStudId()}_${widget.hwAssignId}';
+
+  Future<void> _loadTurnedInFlag() async {
+    final prefs = await SharedPreferences.getInstance();
+    final turnedIn = prefs.getBool(_turnedInPrefsKey) ?? false;
+    if (!mounted) return;
+    setState(() => _isTurnedIn = turnedIn);
+  }
 
   // Helper method to merge cached and server files
   Future<List<Map<String, dynamic>>> _loadAndMergeUploadedFiles() async {
@@ -45,12 +67,12 @@ class _UploadedFilesScreenState extends State<UploadedFilesScreen> {
       final serverFiles = await apiService.fetchUploadedHomeworkFiles(
         hwAssignId: widget.hwAssignId,
         hwType: widget.hwType.trim(),
+        studId: _resolveActiveStudId(),
       );
 
       // Get cached filenames
       final prefs = await SharedPreferences.getInstance();
-      final cacheKey = 'uploaded_files_${widget.hwAssignId}';
-      final cachedNames = prefs.getStringList(cacheKey) ?? [];
+      final cachedNames = prefs.getStringList(_uploadCacheKey) ?? [];
 
       debugPrint('📊 Merge Report:');
       debugPrint('   Server files: ${serverFiles.length}');
@@ -150,7 +172,8 @@ class _UploadedFilesScreenState extends State<UploadedFilesScreen> {
   @override
   void initState() {
     super.initState();
-    _filesFuture = _loadAndMergeUploadedFiles().then((files) {
+    _loadTurnedInFlag();
+    _filesFuture = _initializeAndLoad().then((files) {
       // DEBUG: Print the merged response
       debugPrint('');
       debugPrint('========== MERGED FILES (Server + Cache) ==========');
@@ -162,6 +185,13 @@ class _UploadedFilesScreenState extends State<UploadedFilesScreen> {
       debugPrint('');
       return files;
     });
+  }
+
+  Future<List<Map<String, dynamic>>> _initializeAndLoad() async {
+    _activeStudId = await apiService.resolveActiveStudentId() ??
+        apiService.currentUserId ??
+        widget.studId;
+    return _loadAndMergeUploadedFiles();
   }
 
   String _formatDate(String dateTimeStr) {
@@ -253,6 +283,7 @@ class _UploadedFilesScreenState extends State<UploadedFilesScreen> {
         backgroundColor: AppColors.kDarkBlue,
         foregroundColor: Colors.white,
       ),
+      backgroundColor: _isTurnedIn ? Colors.grey.shade200 : null,
       body: RefreshIndicator(
         onRefresh: _refreshFiles,
         color: AppColors.kDarkBlue,
@@ -365,7 +396,9 @@ class _UploadedFilesScreenState extends State<UploadedFilesScreen> {
 
                             const SizedBox(width: 10),
                             TextButton.icon(
-                              onPressed: () {
+                              onPressed: _isTurnedIn
+                                  ? null
+                                  : () {
                                 showDialog(
                                   context: context,
                                   builder: (ctx) => AlertDialog(
@@ -399,7 +432,7 @@ class _UploadedFilesScreenState extends State<UploadedFilesScreen> {
                                                   : widget.hwType.trim(),
                                               batch: widget.batch,
                                               weekId: widget.weekId,
-                                              studId: widget.studId,
+                                              studId: _resolveActiveStudId(),
                                               fileName: fileName,
                                             );
 
@@ -432,15 +465,15 @@ class _UploadedFilesScreenState extends State<UploadedFilesScreen> {
                                   ),
                                 );
                               },
-                              icon: const Icon(
+                              icon: Icon(
                                 Icons.delete,
                                 size: 18,
-                                color: Colors.red,
+                                color: _isTurnedIn ? Colors.grey : Colors.red,
                               ),
-                              label: const Text(
+                              label: Text(
                                 'Delete',
                                 style: TextStyle(
-                                  color: Colors.red,
+                                  color: _isTurnedIn ? Colors.grey : Colors.red,
                                   fontSize: 13,
                                 ),
                               ),
@@ -461,8 +494,13 @@ class _UploadedFilesScreenState extends State<UploadedFilesScreen> {
       // 🔹 Added Turn In Button Below
       bottomNavigationBar: Padding(
         padding: const EdgeInsets.all(16.0),
-        child: ElevatedButton.icon(
-          onPressed: () async {
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          child: ElevatedButton.icon(
+          onPressed: (_isTurningIn || _isTurnedIn)
+              ? null
+              : () async {
+                  setState(() => _isTurningIn = true);
             try {
               final safeHwType = widget.hwType.trim().isEmpty ? 'Regular Homework' : widget.hwType.trim();
 
@@ -474,6 +512,7 @@ class _UploadedFilesScreenState extends State<UploadedFilesScreen> {
               final uploadedFiles = await apiService.fetchUploadedHomeworkFiles(
                 hwAssignId: widget.hwAssignId,
                 hwType: safeHwType,
+                studId: _resolveActiveStudId(),
               );
 
               if (uploadedFiles.isEmpty) {
@@ -490,7 +529,7 @@ class _UploadedFilesScreenState extends State<UploadedFilesScreen> {
                 hwType: safeHwType,
                 batch: widget.batch,
                 weekId: widget.weekId,
-                studId: widget.studId,
+                studId: _resolveActiveStudId(),
                 hwAssignId: widget.hwAssignId,
                 userId: apiService.currentUserId ?? 0,
                 uploadedFiles: uploadedFileNames,
@@ -501,17 +540,14 @@ class _UploadedFilesScreenState extends State<UploadedFilesScreen> {
               // 3️⃣ Handle Success
               if (response['success'] == true) {
                 _showSnackBar('✅ ${response['message']}');
-                debugPrint('🕒 Waiting for backend to update (3s)...');
-                await Future.delayed(const Duration(seconds: 3));
-
-                // 4️⃣ Force refresh homework list
-                await apiService.fetchStudentHomeWork(); // 🟢 Force data refresh
-
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.setBool(_turnedInPrefsKey, true);
+                if (mounted) setState(() => _isTurnedIn = true);
                 if (!mounted) return;
                 Navigator.pushAndRemoveUntil(
                   context,
                   MaterialPageRoute(builder: (context) => const HomeWorkScreen()),
-                      (route) => false,
+                  (route) => false,
                 );
               } else {
                 throw Exception(response['message'] ?? 'Turn In failed.');
@@ -519,21 +555,32 @@ class _UploadedFilesScreenState extends State<UploadedFilesScreen> {
             } catch (e) {
               debugPrint('❌ [TurnInHomework] Failed → $e');
               _showSnackBar('❌ Failed to Turn In: $e');
+            } finally {
+              if (mounted) setState(() => _isTurningIn = false);
             }
           },
 
 
-          icon: const Icon(Icons.send, color: Colors.white),
-          label: const Text(
-            'Turn In Homework',
-            style: TextStyle(color: Colors.white),
+          icon: _isTurningIn
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.2,
+                    color: Colors.white,
+                  ),
+                )
+              : const Icon(Icons.send, color: Colors.white),
+          label: Text(
+            _isTurningIn ? 'Turning In...' : 'Turn In Homework',
+            style: const TextStyle(color: Colors.white),
           ),
           style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.purple,
+            backgroundColor: Colors.blue.shade900,
             padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 14),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
+            shape: const StadiumBorder(),
+            elevation: 0,
+          ),
           ),
         ),
       ),

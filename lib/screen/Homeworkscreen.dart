@@ -17,7 +17,12 @@ class _HomeWorkScreenState extends State<HomeWorkScreen> {
   @override
   void initState() {
     super.initState();
-    _homeworkFuture = apiService.fetchStudentHomeWork();
+    _homeworkFuture = _loadHomework();
+  }
+
+  Future<List<Map<String, dynamic>>> _loadHomework() async {
+    await apiService.resolveActiveStudentId();
+    return apiService.fetchCurrentStudentHomeWork();
   }
 
   Widget _buildDetailRow(String label, String value, {bool isRed = false}) {
@@ -79,7 +84,7 @@ class _HomeWorkScreenState extends State<HomeWorkScreen> {
         drawer: NavbarScreen(),
         body: RefreshIndicator(
           onRefresh: () async {
-            setState(() => _homeworkFuture = apiService.fetchStudentHomeWork());
+            setState(() => _homeworkFuture = _loadHomework());
             await _homeworkFuture;
           },
           child: FutureBuilder<List<Map<String, dynamic>>>(
@@ -219,16 +224,21 @@ class _HomeWorkScreenState extends State<HomeWorkScreen> {
                                       borderRadius: BorderRadius.circular(10),
                                     ),
                                     child: ElevatedButton(
-                                      onPressed: () {
+                                      onPressed: () async {
                                         final hwType = hw['hw_type']?.toString().isNotEmpty == true
                                             ? hw['hw_type'].toString()
                                             : 'Regular Homework';
       
-                                        final studId = int.tryParse(hw['stud_id'].toString()) ?? 0;
+                                        final studId =
+                                            apiService.currentStudentId ??
+                                            apiService.currentUserId ??
+                                            int.tryParse(hw['stud_id'].toString()) ??
+                                            0;
                                         final batch = int.tryParse(hw['batch'].toString()) ?? 0;
                                         final weekId = int.tryParse(hw['week_id'].toString()) ?? 0;
       
                                         debugPrint('📖 View Homework: ${hw['hw_subject']}');
+                                        await apiService.setCurrentStudentId(studId);
       
                                         Navigator.push(
                                           context,

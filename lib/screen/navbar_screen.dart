@@ -16,15 +16,32 @@ import 'login_screen.dart';
 import 'student_syllabus_screen.dart';
 
 
-// --- Helper for Navigation ---
-Widget _getScreen(BuildContext context, String title) {
-  final normalizedTitle = title
+String _normalizeMenuValue(String value) {
+  return value
       .toLowerCase()
       .replaceAll(RegExp(r'[_-]+'), ' ')
       .replaceAll(RegExp(r'\s+'), ' ')
       .trim();
+}
+
+bool _matchesMenuTarget(List<String> values, List<String> needles) {
+  for (final value in values) {
+    final normalizedValue = _normalizeMenuValue(value);
+    if (normalizedValue.isEmpty) continue;
+    for (final needle in needles) {
+      if (normalizedValue.contains(_normalizeMenuValue(needle))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// --- Helper for Navigation ---
+Widget _getScreen(BuildContext context, {required String title, String route = ''}) {
+  final candidates = [title, route];
   // 🟢 VIEW PROFILE
-  if (normalizedTitle.contains('view my profile')) {
+  if (_matchesMenuTarget(candidates, ['view my profile', 'view profile'])) {
     return FutureBuilder<UserProfile>(
       future: apiService.viewProfile(),
       builder: (context, snapshot) {
@@ -65,23 +82,34 @@ Widget _getScreen(BuildContext context, String title) {
   }
 
   // 🟣 HOMEWORK UPLOAD (Static call)
-  else if (normalizedTitle.contains('homework upload')) {
+  else if (_matchesMenuTarget(candidates, [
+    'homework upload',
+    'student homework',
+    'upload homework',
+    'homework',
+  ])) {
     return const HomeWorkScreen();
   }
 
   // 🟡 STUDENT SYLLABUS (Placeholder)
-  else if (normalizedTitle.contains('student syllabus')) {
+  else if (_matchesMenuTarget(candidates, [
+    'student syllabus',
+    'syllabus',
+    'hscp',
+  ])) {
     return const StudentSyllabusScreen();
   }
 
   // 🟡 CHANGE PASSWORD
-  else if (normalizedTitle.contains('change password') ||
-      normalizedTitle.contains('student password change')) {
+  else if (_matchesMenuTarget(candidates, [
+    'change password',
+    'student password change',
+  ])) {
     return const ChangePasswordScreen();
   }
 
   // 🟠 MODIFY PROFILE
-  else if (normalizedTitle.contains('modify my profile')) {
+  else if (_matchesMenuTarget(candidates, ['modify my profile', 'modify profile'])) {
     return FutureBuilder<UserProfile>(
       future: apiService.viewProfile(),
       builder: (context, snapshot) {
@@ -107,13 +135,13 @@ Widget _getScreen(BuildContext context, String title) {
   else {
     return Scaffold(
       appBar: AppBar(
-        title: Text(title),
+        title: Text(title.isNotEmpty ? title : route),
         backgroundColor: AppColors.kDarkBlue,
         foregroundColor: AppColors.kWhite,
       ),
       body: Center(
         child: Text(
-          'Screen for "$title" is not yet implemented.',
+          'Screen for "${title.isNotEmpty ? title : route}" is not yet implemented.',
           style: const TextStyle(fontSize: 16),
         ),
       ),
@@ -190,13 +218,11 @@ class _NavbarScreenState extends State<NavbarScreen> {
     return map;
   }
 
-  Map<int, String> _mainMenuTitles(List<MenuItem> items) {
-    final Map<int, String> map = {};
-    final Map<int, int> order = {};
+  Map<int, MenuItem> _mainMenuEntries(List<MenuItem> items) {
+    final Map<int, MenuItem> map = {};
     for (final it in items) {
       if (it.subMenuId == 0) {
-        map[it.mainMenuId] = it.mainMenuTitle;
-        order[it.mainMenuId] = it.menuOrder;
+        map[it.mainMenuId] = it;
       }
     }
     return map;
@@ -222,7 +248,7 @@ class _NavbarScreenState extends State<NavbarScreen> {
   @override
   Widget build(BuildContext context) {
     // Build main/sub maps
-    final mainMenuTitles = _mainMenuTitles(_filteredSubMenuList);
+    final mainMenuEntries = _mainMenuEntries(_filteredSubMenuList);
     final subMenusByMainId = _groupSubMenusByMainId(_filteredSubMenuList);
 
     // Order main menu ids by menuOrder if available
@@ -230,7 +256,7 @@ class _NavbarScreenState extends State<NavbarScreen> {
     for (final it in _filteredSubMenuList) {
       if (it.subMenuId == 0) mainMenuOrderMap[it.mainMenuId] = it.menuOrder;
     }
-    final orderedMainIds = mainMenuTitles.keys.toList()
+    final orderedMainIds = mainMenuEntries.keys.toList()
       ..sort((a, b) => (mainMenuOrderMap[a] ?? 999).compareTo(mainMenuOrderMap[b] ?? 999));
 
     final displayUserName = apiService.currentUsername ?? 'User Name';
@@ -376,7 +402,7 @@ class _NavbarScreenState extends State<NavbarScreen> {
                     // Other menu items
                     ...orderedMainMenuTiles(
                       orderedMainIds,
-                      mainMenuTitles,
+                      mainMenuEntries,
                       subMenusByMainId,
                       context,
                     ),
@@ -547,16 +573,17 @@ class _NavbarScreenState extends State<NavbarScreen> {
   // Build tile list for ordered main menus
   List<Widget> orderedMainMenuTiles(
       List<int> orderedMainIds,
-      Map<int, String> mainMenuTitles,
+      Map<int, MenuItem> mainMenuEntries,
       Map<int, List<MenuItem>> subMenusByMainId,
       BuildContext context,
       ) {
     return orderedMainIds.map((mainId) {
-      final title = mainMenuTitles[mainId] ?? 'Menu';
+      final mainEntry = mainMenuEntries[mainId];
+      final title = mainEntry?.mainMenuTitle ?? 'Menu';
       final sub = subMenusByMainId[mainId] ?? [];
 
       // Get appropriate icon based on menu title
-      IconData menuIcon = _getMenuIcon(title);
+      IconData menuIcon = _getMenuIcon(title, alt: mainEntry?.routePath);
 
       // If no submenus, render a simple ListTile
       if (sub.isEmpty) {
@@ -581,7 +608,13 @@ class _NavbarScreenState extends State<NavbarScreen> {
             onTap: () {
               Navigator.of(context).pop();
               Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => _getScreen(context, title)),
+                MaterialPageRoute(
+                  builder: (_) => _getScreen(
+                    context,
+                    title: title,
+                    route: mainEntry?.routePath ?? '',
+                  ),
+                ),
               );
             },
           ),
@@ -626,7 +659,11 @@ class _NavbarScreenState extends State<NavbarScreen> {
                   Navigator.of(context).pop();
                   Navigator.of(context).push(
                     MaterialPageRoute(
-                      builder: (_) => _getScreen(context, item.statusBar),
+                      builder: (_) => _getScreen(
+                        context,
+                        title: item.statusBar,
+                        route: item.routePath,
+                      ),
                     ),
                   );
                 },

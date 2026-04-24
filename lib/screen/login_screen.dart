@@ -31,9 +31,6 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _handleLogin() async {
     if (!_formKey.currentState!.validate()) return; // 🚫 stop if invalid
 
-
-
-
     setState(() {
       _isLoading = true;
       _errorMessage = null;
@@ -42,6 +39,13 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       final username = _usernameController.text.trim();
       final password = _passwordController.text.trim();
+
+      // 🔑 FIX: Logout/clear any existing session BEFORE logging in.
+      // This ensures stale stud_id / user_id from a previous account
+      // does not bleed into the new login session. Without this, switching
+      // accounts (e.g. from ita_17399 to ita_41974) would silently reuse
+      // the old student ID and show the wrong (or no) homework data.
+      await apiService.logout();
 
       // 🧠 Call your API service login
       final UserProfile user = await apiService.login(username, password);
@@ -132,7 +136,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         return 'Please enter your email address.';
                       }
                       final emailRegExp =
-                      RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$');
+                          RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$');
                       if (!emailRegExp.hasMatch(value.trim())) {
                         return 'Enter a valid email address.';
                       }
@@ -157,14 +161,6 @@ class _LoginScreenState extends State<LoginScreen> {
                       }
                       return null;
                     },
-
-                    // validator: (value) {
-                    //   if (value == null || value.isEmpty) {
-                    //     return 'Please enter your password';
-                    //   }
-                    //   return null; // ✅ allow 1-character passwords
-                    // },
-
                     suffixIcon: IconButton(
                       icon: Icon(
                         _isPasswordVisible
@@ -173,7 +169,8 @@ class _LoginScreenState extends State<LoginScreen> {
                         color: Colors.grey,
                       ),
                       onPressed: () {
-                        setState(() => _isPasswordVisible = !_isPasswordVisible);
+                        setState(
+                            () => _isPasswordVisible = !_isPasswordVisible);
                       },
                     ),
                   ),
@@ -244,21 +241,21 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       child: _isLoading
                           ? const SizedBox(
-                        width: 24,
-                        height: 24,
-                        child: CircularProgressIndicator(
-                          color: AppColors.kWhite,
-                          strokeWidth: 3,
-                        ),
-                      )
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(
+                                color: AppColors.kWhite,
+                                strokeWidth: 3,
+                              ),
+                            )
                           : const Text(
-                        'LOG IN',
-                        style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
-                      ),
+                              'LOG IN',
+                              style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                              ),
+                            ),
                     ),
                   ),
 
@@ -411,4 +408,3 @@ class ElevatedTextField extends StatelessWidget {
     );
   }
 }
-
